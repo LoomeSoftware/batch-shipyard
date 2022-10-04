@@ -1,15 +1,17 @@
 name: $(SourceBranch)$(Rev:.r)
 
+variables:
+- name: python.version
+  value: '3.7' 
+- name: PYENV_VERSION
+  value: '3.7.5' 
+- name: python.version
+  value: '16.2.0' 
+
 jobs:
   - job: Windows
     pool:
       vmImage: windows-latest
-    strategy:
-      matrix:
-        Python37:
-          python.version: '3.7'
-          PYENV_VERSION: '3.7.5'
-          VENV_VERSION: '16.2.0'
     steps:
       - task: UsePythonVersion@0
         inputs:
@@ -150,12 +152,6 @@ jobs:
   - job: Linux
     pool:
       vmImage: ubuntu-16.04
-    strategy:
-      matrix:
-        Python37:
-          python.version: '3.7'
-          PYENV_VERSION: '3.7.5'
-          VENV_VERSION: '16.2.0'
     steps:
       - task: UsePythonVersion@0
         inputs:
