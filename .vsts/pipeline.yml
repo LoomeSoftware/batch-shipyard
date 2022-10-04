@@ -3,9 +3,8 @@ name: $(SourceBranch)$(Rev:.r)
 jobs:
   - job: Windows
     pool:
-      vmImage: vs2017-win2016
+      vmImage: windows-latest
     strategy:
-      maxParallel: 1
       matrix:
         Python37:
           python.version: '3.7'
@@ -14,7 +13,7 @@ jobs:
     steps:
       - task: UsePythonVersion@0
         inputs:
-          versionSpec: $(python.version)
+          versionSpec: $(PYENV_VERSION)
           architecture: x64
       - powershell: |
           gci env:* | sort-object name
@@ -152,7 +151,6 @@ jobs:
     pool:
       vmImage: ubuntu-16.04
     strategy:
-      maxParallel: 1
       matrix:
         Python37:
           python.version: '3.7'
