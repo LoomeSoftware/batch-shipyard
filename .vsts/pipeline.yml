@@ -12,9 +12,10 @@ jobs:
           PYENV_VERSION: '3.7.5'
           VENV_VERSION: '16.2.0'
     steps:
-      - task: UsePython@1
+      - task: UsePythonVersion@0
         inputs:
-          version: 'python==$(PYENV_VERSION)'
+          versionSpec: $(python.version)
+          architecture: x64
       - powershell: |
           gci env:* | sort-object name
           python -m pip install --upgrade pip
