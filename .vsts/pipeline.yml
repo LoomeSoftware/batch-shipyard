@@ -1,16 +1,6 @@
 name: $(SourceBranch)$(Rev:.r)
 
 jobs:
-  - job: ComponentGovernance
-    pool:
-      vmImage: windows-2019
-    condition: ne(variables['Build.Reason'], 'PullRequest')
-    variables:
-      EnableDetectorPip: true
-    continueOnError: true
-    steps:
-      - task: ComponentGovernanceComponentDetection@0
-        displayName: 'CG Component Detection'
   - job: Windows
     pool:
       vmImage: vs2017-win2016
