@@ -148,3 +148,188 @@ jobs:
           popd
         displayName: Docker build
         condition: and(succeeded(), ne(variables['DOCKER_TAG'], ''))
+  - job: Linux
+    pool:
+      vmImage: ubuntu-16.04
+    steps:
+      - task: UsePythonVersion@0
+        inputs:
+          versionSpec: $(python.version)
+          architecture: x64
+      - script: |
+          set -e
+          set -o pipefail
+          env
+          curl -fSsL "https://storage.googleapis.com/shellcheck/shellcheck-stable.linux.x86_64.tar.xz" | tar -xJvp -C /tmp/
+          echo "##vso[task.prependpath]/tmp/shellcheck-stable"
+          if [[ "$PYENV_VERSION" == 3.* ]]; then
+            which python3
+            python3 --version
+            echo "##vso[task.setvariable variable=PYTHON;]python3"
+            echo "##vso[task.setvariable variable=PIP;]pip3"
+          else
+            which python
+            python --version
+            echo "##vso[task.setvariable variable=PYTHON;]python"
+            echo "##vso[task.setvariable variable=PIP;]pip"
+          fi
+        displayName: Initialize Build
+      - script: |
+          set -e
+          set -o pipefail
+          echo "PATH=$PATH"
+          echo "PYTHON=$PYTHON PIP=$PIP"
+          which shellcheck
+          $PYTHON -m pip install --upgrade pip
+          $PIP install --upgrade setuptools wheel
+          $PIP install -r requirements.txt
+          $PIP install --no-deps -r req_nodeps.txt
+          $PIP install flake8==3.6.0
+          $PIP list --format=columns --outdated
+        displayName: Fetch Dependencies
+      - script: |
+          set -e
+          set -o pipefail
+          flake8 --select F,E,W --ignore W504 --statistics shipyard.py convoy/*.py
+          if [[ "$PYENV_VERSION" == 3.7* ]]; then
+            flake8 --select F,E,W --ignore W504 --statistics cascade/*.py cargo/*.py federation/*.py heimdall/*.py slurm/*.py
+          fi
+          shellcheck ./*.sh cargo/*.sh cascade/*.sh images/*.sh scripts/*.sh
+        displayName: Static Analysis
+      - script: |
+          set -e
+          set -o pipefail
+          if [ "$BUILD_SOURCEBRANCHNAME" ==  "master" ]; then
+            echo "##vso[task.setvariable variable=DOCKER_TAG;]latest"
+          else
+            echo "##vso[task.setvariable variable=DOCKER_TAG;]${BUILD_SOURCEBRANCHNAME}"
+          fi
+          ARTIFACT_CLI="batch-shipyard-${BUILD_SOURCEBRANCHNAME}-${BUILD_BUILDID}-cli-linux-x86_64"
+          ARTIFACT_UPLOAD_PATH="builds/${BUILD_SOURCEBRANCHNAME}"
+          echo "##vso[task.setvariable variable=ARTIFACT_CLI;]${ARTIFACT_CLI}"
+          echo "##vso[task.setvariable variable=ARTIFACT_UPLOAD_PATH;]${ARTIFACT_UPLOAD_PATH}"
+          echo "ARTIFACT_CLI=$ARTIFACT_CLI ARTIFACT_UPLOAD_PATH=$ARTIFACT_UPLOAD_PATH"
+        displayName: Pre-build Environment (Branch)
+        condition: >
+          and(succeeded(), in(variables['Build.Reason'], 'IndividualCI', 'BatchedCI', 'Manual'),
+          in(variables['Build.SourceBranchName'], 'master', 'develop'), eq(variables['python.version'], '3.7'))
+      - script: |
+          GIT_TAG=$(git tag -l --points-at $BUILD_SOURCEVERSION)
+          ARTIFACT_CLI="batch-shipyard-${GIT_TAG}-cli-linux-x86_64"
+          ARTIFACT_UPLOAD_PATH="releases/${GIT_TAG}"
+          echo "##vso[task.setvariable variable=GIT_TAG;]${GIT_TAG}"
+          echo "##vso[task.setvariable variable=ARTIFACT_CLI;]${ARTIFACT_CLI}"
+          echo "##vso[task.setvariable variable=ARTIFACT_UPLOAD_PATH;]${ARTIFACT_UPLOAD_PATH}"
+          echo "##vso[task.setvariable variable=DOCKER_TAG;]${GIT_TAG}"
+        displayName: Pre-build Environment (Tagged Release)
+        condition: >
+          and(succeeded(), in(variables['Build.Reason'], 'IndividualCI', 'BatchedCI', 'Manual'),
+          startsWith(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['python.version'], '3.7'))
+      - script: |
+          set -e
+          set -o pipefail
+          docker version
+          docker login "$(docker.servername)" -u="$(docker.username)" -p="$(docker.password)"
+          export DOCKER_CLI_EXPERIMENTAL=enabled
+          singularity_version=$(grep -m1 _SINGULARITY_VERSION convoy/misc.py | cut -d "'" -f 2)
+          echo "Replicating Singularity version $singularity_version images to MCR"
+          chkImage=mcr.microsoft.com/azure-batch/shipyard:${singularity_version}-singularity-mnt
+          set +e
+          if docker manifest inspect "$chkImage"; then
+            echo "$chkImage exists, skipping replication"
+          else
+            set -e
+            dhImage="alfpark/singularity:${singularity_version}-mnt"
+            mcrImage="$(docker.servername)/public/azure-batch/shipyard:${singularity_version}-singularity-mnt"
+            docker pull "$dhImage"
+            docker tag "$dhImage" "$mcrImage"
+            docker push "$mcrImage"
+          fi
+          chkImage=mcr.microsoft.com/azure-batch/shipyard:${singularity_version}-singularity-mnt-resource
+          set +e
+          if docker manifest inspect "$chkImage"; then
+            echo "$chkImage exists, skipping replication"
+          else
+            set -e
+            dhImage="alfpark/singularity:${singularity_version}-mnt-resource"
+            mcrImage="$(docker.servername)/public/azure-batch/shipyard:${singularity_version}-singularity-mnt-resource"
+            docker pull "$dhImage"
+            docker tag "$dhImage" "$mcrImage"
+            docker push "$mcrImage"
+          fi
+        displayName: Replicate Singularity Container Images
+        condition: and(succeeded(), ne(variables['ARTIFACT_CLI'], ''))
+      - template: ./pyenv.yml
+      - script: |
+          set -e
+          set -o pipefail
+          echo "ARTIFACT_CLI=$ARTIFACT_CLI ARTIFACT_UPLOAD_PATH=$ARTIFACT_UPLOAD_PATH GIT_TAG=$GIT_TAG"
+          ARTIFACT_CLI_PATH="bin/${ARTIFACT_CLI}"
+          if [ -z "$VENV_VERSION" ]; then
+            $PIP install virtualenv
+          else
+            $PIP install virtualenv==${VENV_VERSION}
+          fi
+          $PYTHON -m virtualenv -p $PYTHON pyi
+          /bin/bash -c \
+          "set -e; source pyi/bin/activate; \
+           pip install pyinstaller; \
+           pip install --upgrade -r requirements.txt; \
+           pip install --upgrade --no-deps -r req_nodeps.txt; \
+           pyinstaller -F -n ${ARTIFACT_CLI} -p batch-shipyard --add-data federation/docker-compose.yml:federation --add-data heimdall:heimdall --add-data schemas:schemas --add-data scripts:scripts --exclude-module future.tests --exclude-module future.backports.test --exclude-module future.moves.test --distpath bin shipyard.py; \
+           deactivate"
+          chmod +x ${ARTIFACT_CLI_PATH}
+          sha256sum ${ARTIFACT_CLI_PATH} | cut -d' ' -f1 > ${ARTIFACT_CLI_PATH}.sha256
+          cat ${ARTIFACT_CLI_PATH}.sha256
+          export BLOBXFER_STORAGE_ACCOUNT=$(blobxfer.storageAccount)
+          export BLOBXFER_STORAGE_ACCOUNT_KEY="$(blobxfer.storageAccountKey)"
+          blobxfer upload --remote-path ${ARTIFACT_UPLOAD_PATH} --local-path ${ARTIFACT_CLI_PATH} --strip-components 1 --file-md5 --file-attributes --overwrite
+        displayName: Build
+        condition: and(succeeded(), ne(variables['ARTIFACT_CLI'], ''))
+      - task: PublishBuildArtifacts@1
+        inputs:
+          pathtoPublish: bin
+          artifactName: BatchShipyard-Linux
+        condition: and(succeeded(), ne(variables['ARTIFACT_CLI'], ''))
+      - script: |
+          set -e
+          set -o pipefail
+          docker version
+          docker login "$(docker.servername)" -u="$(docker.username)" -p="$(docker.password)"
+          if [ -n "$GIT_TAG" ]; then
+            pushd cargo
+            cargoImage="$(docker.servername)/public/azure-batch/shipyard:${DOCKER_TAG}-cargo"
+            docker build --build-arg GIT_BRANCH=$BUILD_SOURCEBRANCHNAME --build-arg GIT_COMMIT=$BUILD_SOURCEVERSION -t $cargoImage .
+            docker push $cargoImage
+            popd
+            pushd cascade
+            cascadeImage="$(docker.servername)/public/azure-batch/shipyard:${DOCKER_TAG}-cascade-docker"
+            docker build --build-arg GIT_BRANCH=$BUILD_SOURCEBRANCHNAME --build-arg GIT_COMMIT=$BUILD_SOURCEVERSION -t $cascadeImage -f Dockerfile.docker .
+            docker push $cascadeImage
+            cascadeImage="$(docker.servername)/public/azure-batch/shipyard:${DOCKER_TAG}-cascade-singularity"
+            docker build --build-arg GIT_BRANCH=$BUILD_SOURCEBRANCHNAME --build-arg GIT_COMMIT=$BUILD_SOURCEVERSION -t $cascadeImage -f Dockerfile.singularity .
+            docker push $cascadeImage
+            popd
+            pushd federation
+            fedImage="$(docker.servername)/public/azure-batch/shipyard:${DOCKER_TAG}-federation"
+            docker build --build-arg GIT_BRANCH=$BUILD_SOURCEBRANCHNAME --build-arg GIT_COMMIT=$BUILD_SOURCEVERSION -t $fedImage .
+            docker push $fedImage
+            popd
+            pushd heimdall
+            heimdallImage="$(docker.servername)/public/azure-batch/shipyard:${DOCKER_TAG}-heimdall"
+            docker build --build-arg GIT_BRANCH=$BUILD_SOURCEBRANCHNAME --build-arg GIT_COMMIT=$BUILD_SOURCEVERSION -t $heimdallImage .
+            docker push $heimdallImage
+            popd
+            pushd slurm
+            slurmImage="$(docker.servername)/public/azure-batch/shipyard:${DOCKER_TAG}-slurm"
+            docker build --build-arg GIT_BRANCH=$BUILD_SOURCEBRANCHNAME --build-arg GIT_COMMIT=$BUILD_SOURCEVERSION -t $slurmImage .
+            docker push $slurmImage
+            popd
+          fi
+          cliImage="$(docker.servername)/public/azure-batch/shipyard:${DOCKER_TAG}-cli"
+          pushd images/docker/linux/cli
+          docker build --build-arg GIT_BRANCH=$BUILD_SOURCEBRANCHNAME --build-arg GIT_COMMIT=$BUILD_SOURCEVERSION -t $cliImage .
+          docker push $cliImage
+          popd
+        displayName: Docker Build
+        condition: and(succeeded(), ne(variables['DOCKER_TAG'], ''))
