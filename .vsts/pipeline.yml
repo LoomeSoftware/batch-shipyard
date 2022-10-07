@@ -5,7 +5,7 @@ variables:
   value: '3.7' 
 - name: PYENV_VERSION
   value: '3.7.5' 
-- name: python.version
+- name: VENV_VERSION
   value: '16.2.0' 
 
 jobs:
