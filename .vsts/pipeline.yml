@@ -150,7 +150,7 @@ jobs:
         condition: and(succeeded(), ne(variables['DOCKER_TAG'], ''))
   - job: Linux
     pool:
-      vmImage: ubuntu-18.04
+      vmImage: ubuntu-20.04
     steps:
       - task: UsePythonVersion@0
         inputs:
